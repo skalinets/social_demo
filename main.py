@@ -24,7 +24,7 @@ app, rt = fh.fast_app(live=True, before=bware)
 def get():
     frm = fh.Form(
         fh.Input(id="login", placeholder="login"),
-        fh.Input(id="name", placeholder="name"),
+        # fh.Input(id="name", placeholder="name"),
         fh.Button("login"),
         action="/login",
         method="post",
@@ -34,7 +34,6 @@ def get():
 
 @dataclass()
 class Login:
-    name: str
     login: str
 
 
@@ -44,22 +43,14 @@ conn = redis.Redis(decode_responses=True, db=1)
 login_redir = fh.RedirectResponse("/login", status_code=303)
 
 
-def get_login(name):
-    pass
-
-
-def add_login(login):
-    create_user(conn, login.name, login.pwd)
-    return login
-
-
 @rt("/login")
 def post(login: Login, sess):
-    if not login.name:
+    if not login.login:
         return login_redir
+
     # Indexing into a MiniDataAPI table queries by primary key, which is `name` here.
     # It returns a dataclass object, if `dataclass()` has been called at some point, or a dict otherwise.
-    uid = create_user(conn, login.login, login.name)
+    uid = create_user(conn, login.login, login.login)
     if not uid:
         return login_redir
     sess["auth"] = login.login
@@ -76,14 +67,21 @@ def logout(sess):
     return login_redir
 
 
+def get_users(conn) -> list[str]:
+    return conn.hkeys("users:")
+
+
 @rt("/")
 def get_home(auth):
+    # conn.flushdb()
     uid = get_user_id(auth)
     posts = get_status_messages(conn, uid)
     ic(posts)
     d_posts = [fh.Div(post["message"]) for post in posts]
+    users = [fh.Div(fh.A(user, href=f"/{user}/messages")) for user in get_users(conn)]
     return fh.Titled(
         f"timeline of {auth}",
+        *users,
         fh.Form(
             fh.Input(name="message", placeholder="your message here"),
             fh.Button("Post"),
@@ -96,7 +94,9 @@ def get_home(auth):
             method="POST",
             action="/logout",
         ),
+        hx_boost=True,
     )
+
 
 @rt("/logout", methods=["POST"])
 def logout_action(sess):
@@ -105,13 +105,57 @@ def logout_action(sess):
 
 
 @rt("/{user}/messages")
-def get_user_messages(user: str):
+def get_user_messages(auth, user: str):
     uid = conn.hget("users:", user)
     if not uid:
         return fh.Response("User not found", status_code=404)
     posts = get_status_messages(conn, uid)
     d_posts = [fh.Div(post["message"]) for post in posts]
-    return fh.Titled(f"timeline of {user}", *d_posts)
+    button = follow_button(user, auth)
+    return fh.Titled(f"timeline of {user}", button, *d_posts)
+
+
+# ignore all pyright errors
+
+
+def follow_button(user, auth):
+    follows = user_follows(user, auth)
+    ic(user, auth, follows)
+    caption = "Follow" if not follows else "Unfollow"
+    button = (
+        fh.Button(
+            caption, hx_post="/follow", hx_vals={"user": user}, hx_swap="outerHTML"
+        )
+        if user != auth
+        else None
+    )
+    return button
+
+
+def user_follows(user_login, follower_login):
+    return conn.zscore(
+        f"following:{get_user_id(follower_login)}", get_user_id(user_login)
+    )
+
+
+@rt("/follow", methods=["POST"])
+def follow_post(auth, user: str):
+    follower_uid = get_user_id(auth)
+    if not follower_uid:
+        return fh.RedirectResponse("/logout", status_code=307)
+
+    following_uid = get_user_id(user)
+    if not following_uid:
+        return fh.Response("User not found", status_code=404)
+
+    extracted_variable = user_follows(user, auth)
+    ic(user, auth, extracted_variable)
+    if extracted_variable:
+        unfollow_user(conn, follower_uid, following_uid)
+    else:
+        follow_user(conn, follower_uid, following_uid)
+
+    return follow_button(user, auth)
 
 
 @rt("/post", methods=["POST"])
@@ -120,7 +164,7 @@ def post_message(auth, message: str):
     if not uid:
         return fh.RedirectResponse("/logout", status_code=307)
 
-    message_id = create_status(conn, uid, message)
+    post_status(conn, uid, message)
     return fh.RedirectResponse("/", status_code=307)
 
 
@@ -197,6 +241,7 @@ def create_user(conn, login, name):
     id = conn.incr("user:id:")  # D
     pipeline = conn.pipeline(True)
     pipeline.hset("users:", llogin, id)  # E
+    pipeline.hset("users_ids:", id, llogin)  # E
     pipeline.hmset(
         "user:%s" % id,
         {  # F
@@ -249,3 +294,124 @@ def create_status(conn, uid, message, **data):
     pipeline.zadd(f"home:{uid}", {id: time.time()})  # F
     pipeline.execute()
     return id  # F
+
+
+HOME_TIMELINE_SIZE = 1000
+
+
+def follow_user(conn, uid, other_uid):
+    fkey1 = "following:%s" % uid  # A
+    fkey2 = "followers:%s" % other_uid  # A
+
+    if conn.zscore(fkey1, other_uid):  # B
+        return None  # B
+
+    now = time.time()
+
+    pipeline = conn.pipeline(True)
+    pipeline.zadd(fkey1, {other_uid: now})  # C
+    pipeline.zadd(fkey2, {uid: now})  # C
+    pipeline.zrevrange(
+        "profile:%s" % other_uid,  # E
+        0,
+        HOME_TIMELINE_SIZE - 1,
+        withscores=True,
+    )  # E
+    following, followers, status_and_score = pipeline.execute()[-3:]
+
+    pipeline.hincrby("user:%s" % uid, "following", int(following))  # F
+    pipeline.hincrby("user:%s" % other_uid, "followers", int(followers))  # F
+    if status_and_score:
+        pipeline.zadd("home:%s" % uid, dict(status_and_score))  # G
+    pipeline.zremrangebyrank("home:%s" % uid, 0, -HOME_TIMELINE_SIZE - 1)  # G
+
+    pipeline.execute()
+    return True
+
+
+def unfollow_user(conn, uid, other_uid):
+    fkey1 = "following:%s" % uid  # A
+    fkey2 = "followers:%s" % other_uid  # A
+
+    if not conn.zscore(fkey1, other_uid):  # B
+        return None  # B
+
+    pipeline = conn.pipeline(True)
+    pipeline.zrem(fkey1, other_uid)  # C
+    pipeline.zrem(fkey2, uid)  # C
+    pipeline.zrevrange(
+        "profile:%s" % other_uid,  # E
+        0,
+        HOME_TIMELINE_SIZE - 1,
+    )  # E
+    following, followers, statuses = pipeline.execute()[-3:]
+
+    pipeline.hincrby("user:%s" % uid, "following", -int(following))  # F
+    pipeline.hincrby("user:%s" % other_uid, "followers", -int(followers))  # F
+    if statuses:
+        pipeline.zrem("home:%s" % uid, *statuses)  # G
+
+    pipeline.execute()
+    return True
+
+
+def get_following(conn, uid):
+    return get_f(conn, "following:%s" % uid)
+
+
+def get_followers(conn, uid):
+    return get_f(conn, "followers:%s" % uid)
+
+
+def get_f(conn, key_name):
+    t = conn.zrange(key_name, 0, -1)  # A
+    pipeline = conn.pipeline(True)
+    [pipeline.hget("users_ids:", to_str(uid)) for uid in t]  # B
+    return pipeline.execute()
+
+
+def post_status(conn, uid, message, **data):
+    id = create_status(conn, uid, message, **data)  # A
+    if not id:  # B
+        return None  # B
+
+    posted = conn.hget("status:%s" % id, "posted")  # C
+    if not posted:  # D
+        return None  # D
+
+    post = {str(id): float(posted)}
+    conn.zadd("profile:%s" % uid, post)  # E
+
+    syndicate_status(conn, uid, post)  # F
+    return id
+
+
+POSTS_PER_PASS = 1000  # A
+
+
+def syndicate_status(conn, uid, post, start=0):
+    followers = conn.zrangebyscore(
+        "followers:%s" % uid,
+        start,
+        "inf",  # B
+        start=0,
+        num=POSTS_PER_PASS,
+        withscores=True,
+    )  # B
+
+    pipeline = conn.pipeline(False)
+    for follower, start in followers:  # E
+        follower = to_str(follower)
+        pipeline.zadd("home:%s" % follower, post)  # C
+        pipeline.zremrangebyrank(  # C
+            "home:%s" % follower, 0, -HOME_TIMELINE_SIZE - 1
+        )  # C
+    pipeline.execute()
+
+    # if len(followers) >= POSTS_PER_PASS:  # D
+    #     execute_later(
+    #         conn,
+    #         "default",
+    #         "syndicate_status",  # D
+    #         [conn, uid, post, start],
+    #     )

@@ -1,6 +1,6 @@
 import redis
 
-from main import create_status, create_user, get_status_messages
+from main import create_status, create_user, follow_user, get_followers, get_following, get_status_messages, get_users
 
 
 def test_hi():
@@ -45,3 +45,27 @@ def test_get_status_messages():
     assert message_id == 1
     messages = get_status_messages(conn, uid)
     assert messages[0]["message"] == message
+
+
+def test_get_users():
+    conn.flushdb()
+    for i in range(10):
+        create_user(conn, f"fl{i}", f"dsdl{i}")
+    users = get_users(conn)
+
+    assert users[0] == "fl0"
+    assert len(users) == 10
+
+def test_follow_user():
+    conn.flushdb()
+    uid = create_user(conn, "biba", "biba")
+    other_uid = create_user(conn, "boba", "boba")
+
+    r = follow_user(conn, uid, other_uid)
+    assert r
+    following = get_following(conn, uid)
+    assert following == ["boba"]
+    followers = get_followers(conn, other_uid)
+    assert followers == ["biba"]
+
+
