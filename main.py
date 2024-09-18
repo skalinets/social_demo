@@ -5,6 +5,8 @@ import uuid
 import math
 from fasthtml import common as fh
 from icecream import ic
+from faker import Faker
+import random
 
 
 def before(req, sess):
@@ -69,26 +71,31 @@ def get_users(conn) -> list[str]:
 def get_home(auth):
     # conn.flushdb()
     uid = get_user_id(auth)
-    posts = get_status_messages(conn, uid)
-    ic(posts)
-    d_posts = [fh.Div(post["message"]) for post in posts]
+    statuses = get_status_messages(conn, uid)
+    d_statuses = [_status_view(status) for status in statuses]
     users = [fh.Div(fh.A(user, href=f"/{user}/messages")) for user in get_users(conn)]
     return fh.Titled(
         f"timeline of {auth}",
         *users,
+        fh.Form(
+            fh.Hidden(name="message", value=generate_tweet()),
+            fh.Button("Tweet wisdom"),
+            method="POST",
+            action="/post",
+        ),
         fh.Form(
             fh.Input(name="message", placeholder="your message here"),
             fh.Button("Post"),
             method="POST",
             action="/post",
         ),
-        *d_posts,
+        *d_statuses,
         fh.Form(
             fh.Button("Logout", action="/logout"),
             method="POST",
             action="/logout",
         ),
-        hx_boost=True,
+        hx_boost="true",
     )
 
 
@@ -103,13 +110,18 @@ def get_user_messages(auth, user: str):
     uid = conn.hget("users:", user)
     if not uid:
         return fh.Response("User not found", status_code=404)
-    posts = get_status_messages(conn, uid)
-    d_posts = [fh.Div(post["message"]) for post in posts]
+    statuses = get_status_messages(conn, uid)
+    d_posts = [_status_view(status) for status in statuses]
     button = follow_button(user, auth)
     return fh.Titled(f"timeline of {user}", button, *d_posts)
 
 
-# ignore all pyright errors
+def _status_view(post):
+    posted_at = time.ctime(float(post["posted"]))
+    user_link = fh.A(
+        f'{post["login"]} @ {posted_at}', href=f"/{post['login']}/messages"
+    )
+    return fh.Card(post["message"], header=user_link)
 
 
 def follow_button(user, auth):
@@ -409,4 +421,21 @@ def syndicate_status(conn, uid, post, start=0):
     #         "default",
     #         "syndicate_status",  # D
     #         [conn, uid, post, start],
-    #     )
+
+
+# Initialize the Faker object
+fake = Faker()
+
+# List of sample hashtags and emojis
+hashtags = ["#Python", "#AI", "#Tech", "#Development", "#Code", "#Cloud"]
+emojis = ["😀", "🚀", "🔥", "💡", "🐍", "💻"]
+
+# Function to generate a fake Twitter message
+
+
+def generate_tweet():
+    # Generate a sentence with a random number of words
+    message = fake.sentence(nb_words=random.randint(5, 20))
+    hashtag = random.choice(hashtags)  # Add a random hashtag
+    emoji = random.choice(emojis)  # Add a random emoji
+    return f"{message} {hashtag} {emoji}"  # )
