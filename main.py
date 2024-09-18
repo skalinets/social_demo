@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from os import environ
 import time
 import redis
 import uuid
@@ -39,7 +40,10 @@ class Login:
     login: str
 
 
-conn = redis.Redis(decode_responses=True, db=1)
+REDIS_URL = environ.get("REDIS_URL", "redis://localhost:6379/1")
+
+conn = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+# conn = redis.Redis(decode_responses=True, db=1)
 
 
 login_redir = fh.RedirectResponse("/login", status_code=303)

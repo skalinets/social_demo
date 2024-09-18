@@ -1,7 +1,46 @@
 # add redis service
 services:
-  redis:
-    image: redis:alpine
-    container_name: redis
+  app:
+    restart: always
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
-      - "6379:6379"
+      - '5001:5001'
+    # cpus: "2.5"
+    environment:
+      - REDIS_URL=redis://redis-sn:6379/0
+      # - REDIS_HOST=redis-sn
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+      - traefik.constraint-label=traefik-public
+      - traefik.http.routers.tw-http.rule=Host(`tw-pupa.kalinets.com`)
+      - traefik.http.routers.tw-http.entrypoints=http
+      - traefik.http.routers.tw-http.middlewares=https-redirect, test-ratelimit
+      - traefik.http.routers.tw-https.rule=Host(`tw-pupa.kalinets.com`)
+      - traefik.http.routers.tw-https.entrypoints=https
+      - traefik.http.routers.tw-https.tls=true
+      - traefik.http.routers.tw-https.tls.certresolver=le
+      - traefik.http.routers.tw-https.middlewares=test-ratelimit
+      - traefik.http.services.tw.loadbalancer.server.port=5001
+      - traefik.http.middlewares.test-ratelimit.ratelimit.average=10
+      - traefik.http.middlewares.test-ratelimit.ratelimit.burst=20
+    networks:
+      traefik-public:
+  redis-sn:
+    restart: always
+    image: 'bitnami/redis:latest'
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+      - appendonly=yes
+    # make it available on the host machine
+    ports:
+      - '6379:6379'
+    networks:
+      traefik-public:
+    # networks:
+    #   - app-tier
+networks:
+  traefik-public:
+    external: true
