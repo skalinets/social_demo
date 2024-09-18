@@ -48,17 +48,11 @@ def post(login: Login, sess):
     if not login.login:
         return login_redir
 
-    # Indexing into a MiniDataAPI table queries by primary key, which is `name` here.
-    # It returns a dataclass object, if `dataclass()` has been called at some point, or a dict otherwise.
     uid = create_user(conn, login.login, login.login)
     if not uid:
         return login_redir
     sess["auth"] = login.login
     return fh.RedirectResponse("/", status_code=303)
-
-
-# Instead of using `app.route` (or the `rt` shortcut), you can also use `app.get`, `app.post`, etc.
-# In this case, the function name is not used to determine the HTTP verb.
 
 
 @app.get("/logout")
@@ -234,9 +228,10 @@ def create_user(conn, login, name):
     if not lock:  # B
         return None  # B
 
-    if conn.hget("users:", llogin):  # C
+    existing_user_id = conn.hget("users:", llogin)
+    if existing_user_id:  # C
         release_lock(conn, "user:" + llogin, lock)  # C
-        return None  # C
+        return existing_user_id  # C
 
     id = conn.incr("user:id:")  # D
     pipeline = conn.pipeline(True)
