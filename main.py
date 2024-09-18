@@ -71,16 +71,29 @@ def get_users(conn) -> list[str]:
     return conn.hkeys("users:")
 
 
+@rt("/users")
+def get_users_page(auth):
+    users = [fh.Div(fh.A(user, href=f"/{user}/messages")) for user in get_users(conn)]
+    return fh.Titled(
+        "Users",
+        home_link(),
+        *users,
+    )
+
+
+def home_link():
+    return fh.Div(fh.A("< HOME", href="/"))
+
+
 @rt("/")
 def get_home(auth):
     # conn.flushdb()
     uid = get_user_id(auth)
     statuses = get_status_messages(conn, uid)
     d_statuses = [_status_view(status) for status in statuses]
-    users = [fh.Div(fh.A(user, href=f"/{user}/messages")) for user in get_users(conn)]
     return fh.Titled(
         f"timeline of {auth}",
-        *users,
+        fh.A("Go here to follow other users", href="/users"),
         fh.Form(
             fh.Hidden(name="message", value=generate_tweet()),
             fh.Button("Tweet wisdom"),
@@ -117,7 +130,7 @@ def get_user_messages(auth, user: str):
     statuses = get_status_messages(conn, uid)
     d_posts = [_status_view(status) for status in statuses]
     button = follow_button(user, auth)
-    return fh.Titled(f"timeline of {user}", button, *d_posts)
+    return fh.Titled(f"timeline of {user}", home_link(), button, *d_posts)
 
 
 def _status_view(post):
@@ -174,7 +187,7 @@ def post_message(auth, message: str):
     if not uid:
         return fh.RedirectResponse("/logout", status_code=307)
 
-    post_status(conn, uid, message)
+    post_status(conn, uid, message[:100])
     return fh.RedirectResponse("/", status_code=307)
 
 
